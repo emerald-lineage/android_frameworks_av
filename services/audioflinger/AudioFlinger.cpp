@@ -2619,6 +2619,25 @@ audio_module_handle_t AudioFlinger::loadHwModule(const char *name)
     return module != nullptr ? module->handle() : AUDIO_MODULE_HANDLE_NONE;
 }
 
+// Whether ro.audio.simulate_device_connections (comma-separated module names) lists the module.
+static bool shouldSimulateDeviceConnections(const char* name) {
+    char value[PROPERTY_VALUE_MAX];
+    if (property_get("ro.audio.simulate_device_connections", value, "") <= 0) {
+        return false;
+    }
+    std::string_view modules(value);
+    while (true) {
+        const size_t comma = modules.find(',');
+        if (modules.substr(0, comma) == name) {
+            return true;
+        }
+        if (comma == std::string_view::npos) {
+            return false;
+        }
+        modules.remove_prefix(comma + 1);
+    }
+}
+
 // loadHwModule_l() must be called with AudioFlinger::mutex()
 // and AudioFlinger::hardwareMutex() held
 AudioHwDevice* AudioFlinger::loadHwModule_ll(const char *name)
@@ -2648,6 +2667,17 @@ AudioHwDevice* AudioFlinger::loadHwModule_ll(const char *name)
     if (rc) {
         ALOGE("loadHwModule() init check error %d for module %s", rc, name);
         return nullptr;
+    }
+
+    // Some vendor AIDL modules connect external devices only with device connection simulation on
+    // (e.g. a module that does not implement Module::populateConnectedDevicePort). The HAL accepts
+    // the change only while no external device is connected, so turn it on right after loading.
+    if (shouldSimulateDeviceConnections(name)) {
+        mHardwareStatus = AUDIO_HW_SET_SIMULATE_CONNECTIONS;
+        rc = dev->setSimulateDeviceConnections(true);
+        mHardwareStatus = AUDIO_HW_IDLE;
+        ALOGW_IF(rc != OK, "loadHwModule() could not simulate device connections for module %s: %d",
+                name, rc);
     }
 
     // Check and cache this HAL's level of support for master mute and master
